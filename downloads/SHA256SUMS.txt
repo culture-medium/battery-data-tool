@@ -1,0 +1,1 @@
+979fa3234882ca784c3d8ae9747555fbdd9ea1813d269ea58868f821bc1acc73  BatteryDataTool-0.4.5-Windows-x64.zip

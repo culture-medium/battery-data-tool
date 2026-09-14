@@ -1,0 +1,37 @@
+# Local environments and generated builds
+.build-venv/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+build/
+release_build/
+dist/
+*.spec
+
+# Experimental data, results and local settings
+*.ndax
+*.ndc
+*.cex
+*.xlsx
+*.xls
+*.csv
+*.tsv
+*.pkl
+*.extracted.json
+设置.json
+提取结果/
+文本转换结果/
+原始提取记录/
+validation/
+research/
+
+# Credentials and editor configuration
+.env
+.env.*
+*.pem
+*.key
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

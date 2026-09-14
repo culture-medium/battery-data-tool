@@ -1,0 +1,84 @@
+# 电池数据处理工具
+
+Windows 本地程序，批量提取新威 **NDAX**、蓝电 **CEX** 循环数据，并将 **TXT / CSV / TSV** 转为 Excel。无需模型、账号或联网。
+
+当前版本：**0.4.5**。
+
+[下载 Windows 程序包](downloads/BatteryDataTool-0.4.5-Windows-x64.zip?raw=1) · [校验值](downloads/SHA256SUMS.txt)
+
+## 使用
+
+下载 Windows 压缩包，解压后双击 `电池数据处理工具.exe`。
+
+1. 选择「电池文件提取」或「TXT 转 Excel」。
+2. 拖入多个文件或文件夹，也可点击「选择文件夹」；默认扫描子文件夹。
+3. 确认导出字段和保存目录，点击开始。
+
+电池文件默认导出循环号、充电容量/比容量、放电容量/比容量、效率。额外指标在「更多设置」。一批文件保存为一个 Excel，每个测试独占一个工作表、每项指标独占一列，可直接复制。
+
+程序内有「使用说明」页，详细说明见 [使用说明.txt](使用说明.txt)。
+
+## 功能
+
+| 分类 | 支持内容 |
+|---|---|
+| 新威 NDAX | 比容量、效率、能量、容量保持率；优先读取内部样品条码 |
+| 蓝电 CEX | 两种已核验布局；容量/比容量、效率、能量/比能量、容量及能量保持率 |
+| EIS 文本 | CHI 阻抗数据，完整列或绘图两列 |
+| CV 文本 | 分圈、多区间极值与 logI 汇总 |
+| 普通文本 | 自动或指定分隔符、表头，保留编号和原始文本 |
+
+支持拖入、自动分类和去重、停止后保留已完成结果、记住输入输出文件夹。
+
+## 蓝电统计口径
+
+- **先充后放**：效率为放电/充电；没有内部参考值时，保持率与上一圈放电量相比。
+- **先放后充**：效率为充电/放电；没有内部参考值时，保持率与上一圈充电量相比。
+- 有已核验内部参考值时，按参考值生效位置计算。首尾单向循环保留。
+- 无活性质量时导出容量 **mAh**、能量 **mWh**；有质量时导出比容量 **mAh/g**、比能量 **Wh/kg**。新威能量单位为 **Wh**。
+
+默认读取文件内已核验设置。如出现「需确认口径」，选中文件，使用「更多操作 → 蓝电循环口径」，选择与蓝电软件一致的口径后重试。修改口径后必须重新提取。
+
+程序保留文件原始工步顺序，检查循环计数、时间、方向、遗漏和重复分配。未知布局、量程或边界冲突会明确报错。
+
+## 从源码运行
+
+需要 Windows 和 Python 3.12。在项目目录执行：
+
+```powershell
+py -3.12 -m venv .build-venv
+.\.build-venv\Scripts\python.exe -m pip install -r requirements-build.txt
+.\.build-venv\Scripts\python.exe neware_app.py
+```
+
+打包为独立 EXE：
+
+```powershell
+.\build_integrated.ps1
+```
+
+生成文件位于 `release_build/BatteryDataTool_045.exe`，PyInstaller 会收集 TkDnD 本地库及第三方许可证。
+
+## 测试与验证范围
+
+不依赖实验数据的测试：
+
+```powershell
+.\.build-venv\Scripts\python.exe -m unittest test_neware_extract.LogicTests test_neware_batch test_app_preferences -v
+```
+
+0.4.5 在本地用六份测试文件与用户提供的参考表进行核验，共 **3,215 圈、20,301 个指标**，在答案显示精度下全部一致；独立 EXE 保存的默认列与全部列工作簿也逐单元格核对。原始实验文件、参考答案、个人路径和提取结果不随仓库提供。
+
+文件头统计标志的含义来自四份 CEX 样本对照，尚无公开格式规范支撑，不能保证任意未来 CEX 文件都适用。旧计数布局也无法单靠结构检查证明原文件未丢失整圈；新版本和不同工步结构仍需官方导出表核验。
+
+拖入测试覆盖 Windows TkDnD DLL 与 Tcl 回调，未模拟物理鼠标拖动。
+
+## 项目结构
+
+- `neware_app.py`：程序入口。
+- `neware_extract.py`、`land_extract.py`、`land_statistics.py`：读取原始数据及核对循环口径。
+- `neware_batch.py`、`neware_excel.py`：批处理、数值列和工作表导出。
+- `text_extract.py`、`text_batch.py`：文本读取、CV 分圈/找峰及 Excel 写入。
+- `battery_view.py`、`text_panel.py`、`ui_common.py`：界面。
+
+第三方组件说明与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `许可证/`。
