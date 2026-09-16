@@ -30,9 +30,21 @@ def percentage(numerator, denominator):
     return value if value <= 999 else 0.0
 
 
+def note_energy_decrease(metadata, previous, point, *, step_offset, boundary=False):
+    """Energy is a signed measured integral, not a sequence/integrity counter."""
+    if point['energy_Wh'] >= previous['energy_Wh']:
+        return
+    metadata['energy_decrease_count'] += 1
+    # Keep bounded examples; endpoints always retain their original values.
+    if len(metadata['energy_decrease_examples']) < 32:
+        metadata['energy_decrease_examples'].append({'step_offset': step_offset,
+            'segment_boundary': boundary, 'previous': dict(previous), 'current': dict(point)})
+
+
 def read_cex(blob, *, metadata=None):
     metadata = metadata if metadata is not None else {}
-    metadata.update(empty_start_rest_steps=[], rest_resume_time_adjustments=[], retention_settings=[])
+    metadata.update(empty_start_rest_steps=[], rest_resume_time_adjustments=[], retention_settings=[],
+                    energy_decrease_count=0, energy_decrease_examples=[], negative_energy_record_count=0)
     if len(blob) < 80 or blob[:4] != MAGIC or len(blob) % 16:
         raise ExtractionError('CEX 文件头无法识别或数据被截断。')
     layout = PROFILES.get(blob[4:8])
@@ -104,15 +116,18 @@ def read_cex(blob, *, metadata=None):
             else:
                 capacity, energy = struct.unpack_from('<ff', raw, 8)
                 raw_capacity, raw_energy = capacity, energy
-            if not all(math.isfinite(v) and v >= 0 for v in (capacity, energy)):
+            if not math.isfinite(capacity) or capacity < 0 or not math.isfinite(energy):
                 raise ExtractionError(f'CEX 累计容量/能量无效，偏移 {offset}。')
+            if energy < 0:
+                metadata['negative_energy_record_count'] += 1
             if (step['mode'] == 0x75 and current >= 0) or (step['mode'] == 0x76 and current <= 0):
                 raise ExtractionError(f'CEX 充放电方向与记录电流不一致，偏移 {offset}。')
             point = {'offset': offset, 'time_raw': time_raw, 'capacity_Ah': capacity, 'energy_Wh': energy,
-                     'raw_capacity': raw_capacity, 'raw_energy': raw_energy}
+                     'raw_capacity': raw_capacity, 'raw_energy': raw_energy,
+                     'voltage_raw': voltage, 'current_raw': current}
             if step['records']:
                 previous = step['last']
-                decreasing_quantity = any(point[k] < previous[k] for k in ('capacity_Ah', 'energy_Wh'))
+                decreasing_capacity = capacity < previous['capacity_Ah']
                 decreasing_time = point['time_raw'] < previous['time_raw']
                 # A verified counter-format pause/resume can rewind the rest
                 # timer by one tick while both accumulated quantities stay fixed.
@@ -123,8 +138,11 @@ def read_cex(blob, *, metadata=None):
                     and all(point[k] == previous[k] for k in ('capacity_Ah', 'energy_Wh'))
                     and codes == [0x803, 0x203, 0x1008, 0x7f408001, 0xff808001]
                     and pending_status[1]['value'] >= pending_status[0]['value'])
-                if decreasing_quantity or (decreasing_time and not resume_tick):
-                    raise ExtractionError(f'CEX 工步内累计量回退或时间倒退，偏移 {offset}。')
+                if decreasing_capacity or (decreasing_time and not resume_tick):
+                    raise ExtractionError(f'CEX 工步内累计容量回退或时间倒退，偏移 {offset}。')
+                # Native LAND also retains decreasing/negative energy. Near
+                # zero voltage it need not increase with charge throughput.
+                note_energy_decrease(metadata, previous, point, step_offset=step['offset'])
                 if resume_tick:
                     metadata['rest_resume_time_adjustments'].append({'offset': offset,
                         'previous_offset': previous['offset'], 'previous_time_raw': previous['time_raw'],
@@ -166,8 +184,9 @@ def extract(path: Path, *, cycle_mode='auto'):
         if groups and groups[-1][0]['cycle_marker']['offset'] == marker['offset']:
             previous = groups[-1][-1]
             if (step['timestamp'] < previous['timestamp'] or step['mode'] != previous['mode']
-                    or any(step['first'][k] < previous['last'][k] for k in ('time_raw', 'capacity_Ah', 'energy_Wh'))):
+                    or any(step['first'][k] < previous['last'][k] for k in ('time_raw', 'capacity_Ah'))):
                 raise ExtractionError('CEX 工步恢复时累计量不连续，无法安全合并。')
+            note_energy_decrease(metadata, previous['last'], step['first'], step_offset=step['offset'], boundary=True)
             groups[-1].append(step)
         else:
             if step['first']['capacity_Ah'] or step['first']['energy_Wh']:

@@ -2,9 +2,9 @@
 
 Windows 本地程序，批量提取新威 **NDAX**、蓝电 **CEX** 循环数据，并将 **TXT / CSV / TSV** 转为 Excel。无需模型、账号或联网。
 
-当前版本：**0.4.6**。
+当前版本：**0.4.7**。
 
-[下载 Windows 程序包](downloads/BatteryDataTool-0.4.6-Windows-x64.zip?raw=1) · [校验值](downloads/SHA256SUMS.txt)
+[下载 Windows 程序包](downloads/BatteryDataTool-0.4.7-Windows-x64.zip?raw=1) · [校验值](downloads/SHA256SUMS.txt)
 
 ## 使用
 
@@ -38,6 +38,7 @@ Windows 本地程序，批量提取新威 **NDAX**、蓝电 **CEX** 循环数据
 - **先放后充**：效率为充电/放电；没有内部参考值时，保持率与上一圈充电量相比。
 - 有已核验内部参考值时，按参考值生效位置计算；工步配置指定首圈充电参考时，以首圈充电量为基准。首尾单向循环保留。
 - 百分比超过 999% 时按蓝电软件显示为 0，原始容量/能量保留。该显示边界由本机原厂读取库对临时副本的独立实验核验，程序无需原厂库运行。
+- 能量可下降或为负数，按工步末值保留，不取最大值、归零或据此重排。下降次数和原始记录位置保存在批次记录及 JSON 中；容量、时间和循环顺序仍独立检查。
 - 无活性质量时导出容量 **mAh**、能量 **mWh**；有质量时导出比容量 **mAh/g**、比能量 **Wh/kg**。新威能量单位为 **Wh**。
 
 默认读取文件内已核验设置。如出现「需确认口径」，选中文件，使用「更多操作 → 蓝电循环口径」，选择与蓝电软件一致的口径后重试。修改口径后必须重新提取。
@@ -60,19 +61,21 @@ py -3.12 -m venv .build-venv
 .\build_integrated.ps1
 ```
 
-生成文件位于 `release_build/BatteryDataTool_046.exe`，PyInstaller 会收集 TkDnD 本地库及第三方许可证。
+生成文件位于 `release_build/BatteryDataTool_047.exe`，PyInstaller 会收集 TkDnD 本地库及第三方许可证。
 
 ## 测试与验证范围
 
 不依赖实验数据的测试：
 
 ```powershell
-.\.build-venv\Scripts\python.exe -m unittest test_neware_extract.LogicTests test_neware_batch test_app_preferences -v
+.\.build-venv\Scripts\python.exe -m unittest test_neware_extract.LogicTests test_neware_batch test_app_preferences test_land_energy -v
 ```
 
-0.4.6 在本地用八份测试文件与用户提供的参考表进行核验，共 **3,502 圈、22,884 个指标**，在答案显示精度下全部一致；独立 EXE 保存的默认列与全部列工作簿也逐单元格核对。原始实验文件、参考答案、个人路径和提取结果不随仓库提供。
+0.4.7 在本地用九份测试文件与用户提供的参考表进行核验，共 **3,718 圈、24,828 个指标**，在答案显示精度下全部一致；独立 EXE 保存的默认列与全部列工作簿也逐单元格核对。原始实验文件、参考答案、个人路径和提取结果不随仓库提供。
 
-文件头统计标志的含义来自六份 CEX 样本对照，尚无公开格式规范支撑，不能保证任意未来 CEX 文件都适用。旧计数布局也无法单靠结构检查证明原文件未丢失整圈；新版本和不同工步结构仍需官方导出表核验。
+新增用本机原厂读取库核对四份同系列文件共 9,510 项数值（允许单精度转换误差），并在临时副本上验证两种布局、两个方向的 16 种能量末值变化。可公开运行的合成测试覆盖下降、跨零、负值、续测，以及容量/时间倒退、非有限值、缺段、重复与调换工步的拒绝处理。程序运行不依赖原厂软件或读取库。
+
+文件头统计标志的含义来自已核验 CEX 样本对照，尚无公开格式规范支撑，不能保证任意未来 CEX 文件都适用。旧计数布局也无法单靠结构检查证明原文件未丢失整圈；新版本和不同工步结构仍需官方导出表核验。
 
 拖入测试覆盖 Windows TkDnD DLL 与 Tcl 回调，未模拟物理鼠标拖动。
 

@@ -74,6 +74,10 @@ def save_result(result: dict, run_directory: Path, columns=None) -> dict:
         notes.append('口径来源：' + ('用户为该文件指定' if policy['source'] == 'explicit_user_choice' else
                                   f"文件内设置（标志 {policy['header_value']:#04x}，已核验格式映射）"))
         notes.append('已检查原始工步顺序、方向和循环边界；每个充放电段仅分配一次。')
+        if result['audit'].get('energy_decrease_count'):
+            notes.append(f"原始能量有 {result['audit']['energy_decrease_count']} 处下降；按末值导出，未取最大值、归零或重排。示例见 JSON。")
+        if result['audit'].get('negative_energy_record_count'):
+            notes.append('原始文件含负能量记录，按蓝电原值保留。')
     if single_direction:
         notes += ["仅单向记录的循环：" + "、".join(map(str, single_direction)),
                   "这些循环已原样保留；缺少方向的 0 代表尚无该方向记录，不能据此评价完整循环。"]
@@ -88,6 +92,8 @@ def save_result(result: dict, run_directory: Path, columns=None) -> dict:
             "capacity_basis": result.get('capacity_basis', 'specific'), "warnings": result.get('warnings', []),
             "format": result.get('format', 'neware_ndax'), "retention_note": schema['retention_note'],
             "statistics_policy": policy,
+            "energy_decrease_count": result['audit'].get('energy_decrease_count', 0),
+            "negative_energy_record_count": result['audit'].get('negative_energy_record_count', 0),
             "source_sha256": result["source_sha256"], "selected_columns": list(columns)}
 
 
