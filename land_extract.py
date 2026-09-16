@@ -14,24 +14,32 @@ from neware_extract import EXTRACTOR_VERSION, ExtractionError
 from land_statistics import select_statistics, assign_cycles, CHARGE, DISCHARGE
 
 MAGIC = b'\x10\x11\x09\x88'
-PROFILES = {b'\x02\x01\x01\x00': 'counter16', b'\x07\x00\x04\x00': 'float16'}
-VERIFIED_RANGES = {'counter16': {(5, 5)}, 'float16': {(0xe005, 0xc005), (0xe005, 0xc014)}}
+PROFILES = {b'\x02\x01\x01\x00': 'counter16', b'\x07\x00\x04\x00': 'float16',
+            b'\x01\x00\x04\x00': 'float16'}
+VERIFIED_RANGES = {b'\x02\x01\x01\x00': {(5, 5)},
+                   b'\x07\x00\x04\x00': {(0xe005, 0xc005), (0xe005, 0xc014)},
+                   b'\x01\x00\x04\x00': {(5, 5)}}
 
 
 def percentage(numerator, denominator):
     if not denominator: return None
     value = numerator / denominator * 100
-    return struct.unpack('<f', struct.pack('<f', value))[0]
+    value = struct.unpack('<f', struct.pack('<f', value))[0]
+    # LAND's own local reader applies this display limit; verified with
+    # independent values on both sides of 999%, not a sample/cycle exception.
+    return value if value <= 999 else 0.0
 
 
-def read_cex(blob):
+def read_cex(blob, *, metadata=None):
+    metadata = metadata if metadata is not None else {}
+    metadata.update(empty_start_rest_steps=[], rest_resume_time_adjustments=[], retention_settings=[])
     if len(blob) < 80 or blob[:4] != MAGIC or len(blob) % 16:
         raise ExtractionError('CEX 文件头无法识别或数据被截断。')
     layout = PROFILES.get(blob[4:8])
     if layout is None:
         raise ExtractionError('此 CEX 版本尚未核验，请提供该文件及官方导出数据。')
     ranges = struct.unpack_from('<HH', blob, 24)
-    if ranges not in VERIFIED_RANGES[layout]:
+    if ranges not in VERIFIED_RANGES[blob[4:8]]:
         raise ExtractionError(f'此 CEX 量程/存储标志尚未核验：{ranges}。')
     mass_g = struct.unpack_from('<f', blob, 28)[0]
     if not math.isfinite(mass_g) or mass_g < 0:
@@ -40,6 +48,7 @@ def read_cex(blob):
     offset, records, blocks = 64, 0, 0
     steps, references = [], []
     step, cycle_marker = None, None
+    pending_status = []
     while offset < len(blob):
         raw = blob[offset:offset + 16]
         signature, word1, word2, word3 = struct.unpack('<4I', raw)
@@ -47,6 +56,14 @@ def read_cex(blob):
             end = offset + 16 + (word1 >> 16)
             if end % 16 or end + 16 > len(blob) or blob[end:end+4] != b'\xbb\xbb\xff\xff' or blob[end+4:end+16] != raw[4:]:
                 raise ExtractionError(f'CEX 配置数据块不完整：偏移 {offset}。')
+            if word1 & 65535 == 0x13:
+                plan = blob[offset+16:end]
+                if len(plan) < 64 or plan[:4] != b'\x22\x11\x09\x88' or struct.unpack_from('<H', plan, 4)[0] not in (0x32, 0x37):
+                    raise ExtractionError('CEX 工步配置版本尚未核验。')
+                flags = struct.unpack_from('<H', plan, 46)[0]
+                if flags not in (0, 0x8200):
+                    raise ExtractionError(f'CEX 保持率参考设置尚未核验：{flags:#x}。')
+                metadata['retention_settings'].append({'offset': offset, 'flags': flags})
             blocks += 1
             offset = end + 16
             continue
@@ -66,6 +83,9 @@ def read_cex(blob):
                     raise ExtractionError(f'未核验的 CEX 工步类型 {mode:#x}，偏移 {offset}。')
                 step = {'offset': offset, 'mode': mode, 'source_mode': source_mode, 'cycle_marker': cycle_marker,
                         'records': 0, 'step_code': word1 >> 16, 'timestamp': word3}
+                pending_status = []
+            elif kind == 0x33:
+                pending_status.append({'offset': offset, 'code': word2, 'value': word3})
             elif kind in (0xb1, 0xb2):
                 value = struct.unpack_from('<f', raw, 8)[0]
                 if not math.isfinite(value) or value <= 0:
@@ -91,16 +111,41 @@ def read_cex(blob):
             point = {'offset': offset, 'time_raw': time_raw, 'capacity_Ah': capacity, 'energy_Wh': energy,
                      'raw_capacity': raw_capacity, 'raw_energy': raw_energy}
             if step['records']:
-                if any(point[k] < step['last'][k] for k in ('time_raw', 'capacity_Ah', 'energy_Wh')):
+                previous = step['last']
+                decreasing_quantity = any(point[k] < previous[k] for k in ('capacity_Ah', 'energy_Wh'))
+                decreasing_time = point['time_raw'] < previous['time_raw']
+                # A verified counter-format pause/resume can rewind the rest
+                # timer by one tick while both accumulated quantities stay fixed.
+                # Preserve that raw tick and source order; never sort or change it.
+                codes = [event['code'] for event in pending_status]
+                resume_tick = (layout == 'counter16' and step['mode'] == 0x70 and current == 0
+                    and previous['time_raw'] - time_raw == 1
+                    and all(point[k] == previous[k] for k in ('capacity_Ah', 'energy_Wh'))
+                    and codes == [0x803, 0x203, 0x1008, 0x7f408001, 0xff808001]
+                    and pending_status[1]['value'] >= pending_status[0]['value'])
+                if decreasing_quantity or (decreasing_time and not resume_tick):
                     raise ExtractionError(f'CEX 工步内累计量回退或时间倒退，偏移 {offset}。')
+                if resume_tick:
+                    metadata['rest_resume_time_adjustments'].append({'offset': offset,
+                        'previous_offset': previous['offset'], 'previous_time_raw': previous['time_raw'],
+                        'time_raw': time_raw, 'status_events': list(pending_status)})
             else:
                 step['first'] = point
             step['last'] = point
             step['records'] += 1
             records += 1
+            pending_status = []
         offset += 16
     if step is not None:
         steps.append(step)
+    # Some counter-format files start with an empty rest before the actual rest.
+    # It contains no measurement and does not represent a charge/discharge cycle.
+    if (len(steps) >= 2 and not steps[0]['records'] and layout == 'counter16'
+            and steps[0]['mode'] == steps[1]['mode'] == 0x70 and steps[1]['records']
+            and steps[0]['cycle_marker'] == steps[1]['cycle_marker']
+            and steps[0]['timestamp'] <= steps[1]['timestamp']):
+        metadata['empty_start_rest_steps'].append(steps[0]['offset'])
+        steps = steps[1:]
     if not steps or any(not step['records'] for step in steps):
         raise ExtractionError('CEX 文件无数据或包含空工步，请等待文件写入完成。')
     return layout, mass_g, steps, references, records, blocks
@@ -109,7 +154,8 @@ def read_cex(blob):
 def extract(path: Path, *, cycle_mode='auto'):
     path = Path(path)
     blob = path.read_bytes()
-    layout, mass_g, steps, references, record_count, blocks = read_cex(blob)
+    metadata = {}
+    layout, mass_g, steps, references, record_count, blocks = read_cex(blob, metadata=metadata)
     groups = []
     for step in steps:
         if step['mode'] == 0x70:
@@ -131,11 +177,18 @@ def extract(path: Path, *, cycle_mode='auto'):
         raise ExtractionError('CEX 中没有充放电数据。')
     policy = select_statistics(blob, cycle_mode)
     first_mode = policy['first_mode']
+    settings = {setting['flags'] for setting in metadata['retention_settings']}
+    if len(settings) > 1:
+        raise ExtractionError('测试中修改了保持率参考设置，此组合尚未核验。')
+    first_charge_reference = settings == {0x8200}
+    if first_charge_reference and (first_mode != DISCHARGE or references):
+        raise ExtractionError('首圈充电参考与所选循环口径/参考事件组合尚未核验。')
     cycles, assignment = assign_cycles(groups, layout, first_mode)
     # Only charge-based stored reference flags have independent answers.
     if references and (first_mode != DISCHARGE or any(r['flags'] != 0x8200 for r in references)):
         raise ExtractionError('此蓝电参考值的方向/标志尚未核验，无法确认保持率。')
     rows, previous_capacity, previous_energy = [], None, None
+    first_capacity, first_energy = None, None
     reference_index, qref, eref = 0, None, None
     has_qref = any(r['kind'] == 0xb1 for r in references)
     has_eref = any(r['kind'] == 0xb2 for r in references)
@@ -154,8 +207,12 @@ def extract(path: Path, *, cycle_mode='auto'):
             if reference['kind'] == 0xb1: qref = reference
             else: eref = reference
             reference_index += 1
-        retention = (percentage(qret, qref['value']) if qref else 100.0) if has_qref else (percentage(qret, previous_capacity) if previous_capacity else 100.0)
-        energy_retention = (percentage(eret, eref['value']) if eref else 100.0) if has_eref else (percentage(eret, previous_energy) if previous_energy else 100.0)
+        if retained and first_capacity is None:
+            first_capacity, first_energy = qret, eret
+        capacity_base = first_capacity if first_charge_reference else previous_capacity
+        energy_base = first_energy if first_charge_reference else previous_energy
+        retention = (percentage(qret, qref['value']) if qref else 100.0) if has_qref else (percentage(qret, capacity_base) if capacity_base else 100.0)
+        energy_retention = (percentage(eret, eref['value']) if eref else 100.0) if has_eref else (percentage(eret, energy_base) if energy_base else 100.0)
         if not retained:
             retention = energy_retention = 0.0
         efficiency = percentage(qdis, qch) if first_mode == CHARGE else percentage(qch, qdis)
@@ -181,13 +238,14 @@ def extract(path: Path, *, cycle_mode='auto'):
             'mass_mg': mass_g * 1000 if mass_g else None, 'mass_source': 'CEX offset 28: float32 grams',
             'capacity_basis': 'specific' if mass_g else 'absolute',
             'warnings': [] if mass_g else ['文件未填写活性质量，导出容量（mAh）和能量（mWh）。'],
-            'audit': {'layout': layout, 'record_count': record_count, 'step_count': len(steps),
+            'audit': {'layout': layout, 'record_count': record_count, 'step_count': len(steps), **metadata,
                       'statistics_policy': policy, 'cycle_assignment': assignment,
                       'storage_flags': list(struct.unpack_from('<HH', blob, 24)),
                       'source_step_modes': sorted({s['source_mode'] for s in steps}),
                       'cycle_count': len(rows), 'cycle_first_direction': 'charge' if first_mode == 0x76 else 'discharge',
                       'embedded_blocks_skipped': blocks, 'reference_events': references,
+                      'percentage_display_limit': 999.0,
                       'continued_steps': sum(len(g) > 1 for g in groups),
-                      'capacity_retention_mode': 'file_reference' if has_qref else 'previous_' + policy['retention_direction'],
-                      'energy_retention_mode': 'file_reference' if has_eref else 'previous_' + policy['retention_direction']},
+                      'capacity_retention_mode': 'first_charge' if first_charge_reference else 'file_reference' if has_qref else 'previous_' + policy['retention_direction'],
+                      'energy_retention_mode': 'first_charge' if first_charge_reference else 'file_reference' if has_eref else 'previous_' + policy['retention_direction']},
             'cycles': rows}

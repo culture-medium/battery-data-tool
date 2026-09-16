@@ -42,7 +42,6 @@ class ExtractorApp:
         self.preferences = Preferences(settings_path or app_directory() / '设置.json')
         build_view(self, root, app_directory(), EXTRACTOR_VERSION, CYCLE_MODES)
         self.dnd_enabled = register_drop(self)
-        root.after_idle(self.restore_folder)
         root.after(100, self.poll)
 
     def current_columns(self):
@@ -101,19 +100,11 @@ class ExtractorApp:
         try: self.preferences.remember(**values)
         except (OSError, ValueError) as exc: self.detail.set(f'无法记住文件夹：{exc}')
 
-    def restore_folder(self):
-        folder = self.preferences.get('battery_input')
-        if self.files or not folder: return
-        try:
-            if Path(folder).is_dir(): self.add_paths([folder])
-        except OSError as exc:
-            self.detail.set(f'无法读取上次的文件夹：{exc}')
-
     def export_selected(self):
         if not self.last_manifest or not self.last_manifest["success"] or not self.current_columns() or self.busy:
             return
         target = filedialog.asksaveasfilename(parent=self.root, title="另存本批所有已完成文件（当前勾选列）",
-            initialdir=str(self.last_directory), initialfile="循环数据_所选列.xlsx",
+            initialdir=str(self.last_workbook.parent if self.last_workbook else self.last_directory), initialfile="循环数据_所选列.xlsx",
             defaultextension=".xlsx", filetypes=[("Excel 工作簿", "*.xlsx")])
         if not target:
             return
@@ -125,6 +116,8 @@ class ExtractorApp:
     def save_workbook(self, path):
         mappings = export_workbook(self.last_manifest["entries"], path, self.current_columns())
         self.last_workbook = Path(path)
+        self.output.set(str(Path(path).parent))
+        self.remember_paths(battery_output=Path(path).parent)
         self.open_button.configure(state="normal")
         self.detail.set(f"已保存 {len(mappings)} 个工作表：{path}")
         return mappings
@@ -166,6 +159,7 @@ class ExtractorApp:
     def remove_selected(self):
         if self.busy: return
         remove = {int(i) for i in self.tree.selection()}
+        if not remove: return
         self.files = [p for i, p in enumerate(self.files) if i not in remove]
         self.refresh()
 
@@ -175,7 +169,8 @@ class ExtractorApp:
         self.refresh()
 
     def choose_output(self):
-        selected = filedialog.askdirectory(parent=self.root, title="选择结果保存目录", initialdir=self.output.get())
+        selected = filedialog.askdirectory(parent=self.root, title="选择结果保存目录",
+            initialdir=self.preferences.initial_directory('battery_output', self.output.get() or app_directory()))
         if selected:
             self.output.set(selected)
             self.remember_paths(battery_output=selected)
@@ -201,10 +196,12 @@ class ExtractorApp:
         if not self.files:
             messagebox.showinfo("添加测试文件", "请先选择包含 NDAX 或 CEX 的文件夹。", parent=self.root)
             return
-        output = self.output.get().strip()
-        if not output:
-            messagebox.showinfo("选择保存目录", "请指定提取结果的保存目录。", parent=self.root)
-            return
+        if not self.output.get().strip():
+            self.choose_output()
+            if not self.output.get().strip():
+                self.status.set('未选择保存位置，文件列表保留。')
+                return
+        output = Path(self.output.get().strip()).expanduser().resolve()
         self.remember_paths(battery_output=output)
         self.refresh()
         self.cancel.clear()
@@ -220,7 +217,7 @@ class ExtractorApp:
 
         def work():
             try:
-                run_batch(files, Path(output), cycle_mode=mode, land_modes=land_modes,
+                run_batch(files, output, cycle_mode=mode, land_modes=land_modes,
                           columns=columns, cancel=self.cancel, on_event=self.events.put)
             except Exception as exc:
                 self.events.put({"type": "fatal", "error": f"{type(exc).__name__}: {exc}"})

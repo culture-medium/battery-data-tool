@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 
 
-def check_statistics_choice(app, manifest, output, wait_for):
+def check_statistics_choice(app, manifest, output, wait_for, start_without_prompt):
     source = next((e['source'] for e in manifest['entries']
                    if e.get('capacity_basis') == 'absolute' and e.get('format') == 'land_cex'), None)
     if not source:
@@ -18,7 +18,7 @@ def check_statistics_choice(app, manifest, output, wait_for):
         app.output.set(str(output/'口径流程'))
         # The advanced Neware setting must not override CEX file settings.
         app.mode.set('放电优先')
-        app.start_button.invoke(); wait_for(app.root, app)
+        start_without_prompt(app); wait_for(app.root, app)
         first = app.last_manifest
         assert (first['failed'], first['success']) == (1, 1), first
         error = next(e for e in first['entries'] if e['status'] == 'error')
@@ -32,7 +32,7 @@ def check_statistics_choice(app, manifest, output, wait_for):
         assert str(app.actions_menu.entrycget('另存所选列', 'state')) == 'disabled'
         assert app.land_modes[str(unknown)] == 'charge'
         assert app.land_modes.get(str(known), 'auto') == 'auto'
-        app.start_button.invoke(); wait_for(app.root, app)
+        start_without_prompt(app); wait_for(app.root, app)
         second = app.last_manifest
         assert (second['failed'], second['success']) == (0, 2), second
         assert all(e['cycles'] == 191 for e in second['entries'])

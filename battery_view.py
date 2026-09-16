@@ -61,6 +61,7 @@ def build_view(app, root, directory, version, modes):
                                style='CardHint.TLabel', justify='center')
     app.empty_hint.place(relx=.5, rely=.5, anchor='center')
     app.tree.bind('<<TreeviewSelect>>', app.show_selection)
+    app.tree.bind('<Delete>', lambda _: app.remove_selected())
     app.detail = tk.StringVar(value='')
     wrap_label(files, app.detail).grid(row=2, column=0, sticky='ew', pady=(10, 0))
 
@@ -102,7 +103,7 @@ def build_view(app, root, directory, version, modes):
     ttk.Button(advanced, text='完成', style='Primary.TButton', command=app.advanced_window.withdraw).grid(row=4, column=1, sticky='e')
     row = inner(settings); row.grid(row=2, column=0, sticky='ew'); row.columnconfigure(1, weight=1)
     ttk.Label(row, text='保存位置', style='CardHint.TLabel').grid(row=0, column=0, padx=(0, 14))
-    app.output = tk.StringVar(value=app.preferences.get('battery_output', directory/'提取结果'))
+    app.output = tk.StringVar(value=app.preferences.get('battery_output'))
     app.output_entry = ttk.Entry(row, textvariable=app.output); app.output_entry.grid(row=0, column=1, sticky='ew')
     app.output_entry.bind('<FocusOut>', lambda _: app.remember_paths(battery_output=app.output.get()))
     app.output_entry.bind('<Return>', lambda _: app.remember_paths(battery_output=app.output.get()))

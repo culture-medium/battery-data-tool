@@ -26,7 +26,11 @@ def profile(result):
         schema = dict(LAND_ABSOLUTE if result.get('capacity_basis') == 'absolute' else LAND)
         direction = result.get('audit', {}).get('statistics_policy', {}).get('retention_direction', 'charge')
         label = '放电' if direction == 'discharge' else '充电'
-        schema['retention_note'] = f'保持率按{label}量统计：有文件参考值时按生效位置计算；无参考值时与上一圈{label}量相比。'
+        if result.get('audit', {}).get('capacity_retention_mode') == 'first_charge':
+            schema['retention_note'] = '保持率：按文件工步配置，与首圈充电容量/能量相比。'
+        else:
+            schema['retention_note'] = f'保持率按{label}量统计：有文件参考值时按生效位置计算；无参考值时与上一圈{label}量相比。'
+        schema['retention_note'] += '蓝电百分比超过 999% 时按软件显示为 0；原始容量和能量保留。'
         return schema
     return NEWARE
 

@@ -8,6 +8,19 @@ from battery_schema import profile, available_columns, display_values
 from neware_batch import json_write, DEFAULT_COLUMNS
 
 
+def start_without_prompt(panel):
+    from tkinter import filedialog
+    choose_dir, choose_file = filedialog.askdirectory, filedialog.asksaveasfilename
+    def unexpected(**_):
+        raise AssertionError('Saved output location must not trigger another dialog')
+    filedialog.askdirectory = filedialog.asksaveasfilename = unexpected
+    try:
+        panel.start_button.invoke()
+        assert panel.busy
+    finally:
+        filedialog.askdirectory, filedialog.asksaveasfilename = choose_dir, choose_file
+
+
 def wait_for(root, panel):
     deadline = time.monotonic() + 180
     while panel.busy and time.monotonic() < deadline:
@@ -22,6 +35,7 @@ def run_selftest(app, args):
     args.out.mkdir(parents=True, exist_ok=True)
     from drop_selftest import check_drop_inputs, native_drop
     app.root.update_idletasks()
+    assert not app.files and not app.text_panel.files
     drop_checks = check_drop_inputs(app)
     assert len(app.notebook.tabs()) == 3
     assert not hasattr(app, 'preview') and not hasattr(app.text_panel, 'preview')
@@ -30,7 +44,7 @@ def run_selftest(app, args):
     assert native_drop(app, args.batch) == 'copy'
     initial = tuple(range(8)) if args.all_columns else DEFAULT_COLUMNS
     assert app.current_columns() == initial
-    app.start_button.invoke(); assert app.busy
+    start_without_prompt(app)
     wait_for(root, app)
     manifest = app.last_manifest
     assert manifest and manifest['failed'] == 0 and not manifest['excel_error'], manifest
@@ -70,7 +84,7 @@ def run_selftest(app, args):
     assert not app.current_columns() and str(app.actions_menu.entrycget('另存所选列', 'state')) == 'disabled'
     for i in DEFAULT_COLUMNS: app.field_buttons[i].invoke()
     from land_selftest import check_statistics_choice
-    policy_checks = check_statistics_choice(app, manifest, args.out, wait_for)
+    policy_checks = check_statistics_choice(app, manifest, args.out, wait_for, start_without_prompt)
     text_manifest = None
     if args.text_folder:
         panel = app.text_panel; app.notebook.select(1); root.update_idletasks()
@@ -86,7 +100,7 @@ def run_selftest(app, args):
         panel.eis_simple.set(True); panel.cv_split.set(False)
         panel.low.set('1.5'); panel.high.set('2.2'); panel.add_range()
         assert panel.ranges == [(1.5, 2.2, 'min')]
-        panel.start_button.invoke(); assert panel.busy
+        start_without_prompt(panel)
         wait_for(root, panel)
         text_manifest = panel.manifest
         assert text_manifest and not text_manifest['failed'] and not text_manifest['excel_errors'], text_manifest
@@ -105,6 +119,7 @@ def run_selftest(app, args):
     report = {'ok': True, 'version': root.title(), 'drop_checks': drop_checks, 'policy_checks': policy_checks,
               'tabs': [app.notebook.tab(t, 'text') for t in app.notebook.tabs()],
               'manifest': manifest, 'all_columns_export': str(target), 'export_checks': checks, 'text_manifest': text_manifest,
-              'data_preview_removed': True, 'secondary_actions_in_menu': True}
+              'data_preview_removed': True, 'secondary_actions_in_menu': True,
+              'startup_queues_empty': True, 'chosen_output_used_without_prompt': True}
     json_write(args.out / 'gui_smoke.json', report)
     return 0

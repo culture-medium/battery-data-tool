@@ -20,8 +20,8 @@ class TextPanel(ttk.Frame):
         self.files, self.dropped_files = [], None
         self.preferences = preferences
         self.columnconfigure(0, weight=1); self.rowconfigure(0, weight=1)
-        self.input = tk.StringVar(value=preferences.get('text_input'))
-        self.output = tk.StringVar(value=preferences.get('text_output', directory / '文本转换结果'))
+        self.input = tk.StringVar(value='')
+        self.output = tk.StringVar(value=preferences.get('text_output'))
         files = card(self); files.grid(row=0, column=0, sticky='nsew')
         files.columnconfigure(0, weight=1); files.rowconfigure(2, weight=1)
         header = inner(files); header.grid(row=0, column=0, sticky='ew', pady=(0, 12))
@@ -33,6 +33,8 @@ class TextPanel(ttk.Frame):
         box.pack(side='right'); self.controls.append(box)
         button = ttk.Button(header, text='清空列表', command=self.clear_files)
         button.pack(side='right', padx=(0, 10)); self.controls.append(button)
+        self.remove_button = ttk.Button(header, text='移除选中', command=self.remove_files)
+        self.remove_button.pack(side='right', padx=(0, 10)); self.controls.append(self.remove_button)
         row = inner(files); row.grid(row=1, column=0, sticky='ew', pady=(0, 14)); row.columnconfigure(0, weight=1)
         self.input_entry = ttk.Entry(row, textvariable=self.input)
         self.input_entry.grid(row=0, column=0, sticky='ew'); self.controls.append(self.input_entry)
@@ -41,11 +43,12 @@ class TextPanel(ttk.Frame):
         button = ttk.Button(row, text='选择文件夹', command=lambda: self.choose(self.input))
         button.grid(row=0, column=1, padx=(10, 0)); self.controls.append(button)
         table, self.tree = file_table(files, ('file', 'kind', 'status', 'rows'),
-                                      ('文件名称', '类型', '处理状态', '数据行数'), (800, 85, 170, 100))
+                                      ('文件名称', '类型', '处理状态', '数据行数'), (800, 85, 170, 100), multiple=True)
         table.grid(row=2, column=0, sticky='nsew')
         self.empty_hint = ttk.Label(table, text='拖入文件或文件夹，或点击「选择文件夹」', style='CardHint.TLabel', justify='center')
         self.empty_hint.place(relx=.5, rely=.5, anchor='center')
         self.tree.bind('<<TreeviewSelect>>', self.show_selection)
+        self.tree.bind('<Delete>', lambda _: self.remove_files())
         self.detail = tk.StringVar(value='')
         wrap_label(files, self.detail).grid(row=3, column=0, sticky='ew', pady=(10, 0))
 
@@ -120,7 +123,6 @@ class TextPanel(ttk.Frame):
         self.stop_button = ttk.Button(bottom, text='停止后续文件', command=self.stop, state='disabled')
         self.open_button = ttk.Button(bottom, text='打开结果文件夹', command=self.open_results, state='disabled')
         self.open_button.pack(side='right')
-        self.after_idle(self.scan_folder)
         self.after(100, self.poll)
 
     def remember_paths(self):
@@ -167,10 +169,21 @@ class TextPanel(ttk.Frame):
     def add_paths(self, paths):
         if self.busy: return
         files = collect_text_files(self.files + list(paths), self.recursive.get())
+        self.set_file_selection(files)
+
+    def set_file_selection(self, files):
         self.dropped_files = files
         self._drop_display = f'已添加 {len(files)} 个文件，可继续拖入'
         self.input.set(self._drop_display)
         self.populate_files(files, text_source_root(files, files))
+
+    def remove_files(self):
+        if self.busy: return
+        selected = {int(i) for i in self.tree.selection()}
+        if not selected: return
+        remaining = [p for i, p in enumerate(self.files) if i not in selected]
+        if remaining: self.set_file_selection(remaining)
+        else: self.clear_files()
 
     def clear_files(self):
         if self.busy: return
@@ -220,13 +233,20 @@ class TextPanel(ttk.Frame):
         try:
             folder, output, options = self.input.get().strip(), self.output.get().strip(), self.options()
             if self.dropped_files is not None and folder == self._drop_display: folder = list(self.dropped_files)
-            if not folder or not output: raise ValueError('请选择输入文件夹和保存目录。')
+            if not folder: raise ValueError('请选择输入文件夹或拖入文件。')
             files = collect_text_files(folder, options['recursive'])
             if not files: raise ValueError('没有找到 TXT、CSV 或 TSV 文件。')
             if not options['kinds']: raise ValueError('请至少选择一种文本类型。')
         except (ValueError, OSError) as exc:
             messagebox.showerror('无法开始', str(exc), parent=self); return
+        if not output:
+            self.choose(self.output)
+            output = self.output.get().strip()
+            if not output:
+                self.status.set('未选择保存位置，文件列表保留。')
+                return
         self.remember_paths()
+        self.files = files
         self.tree.delete(*self.tree.get_children()); self.empty_hint.place_forget()
         self.count_text.set(f"{len(files)} 个文件")
         self.entries, self.manifest, self.run_options = {}, None, options
