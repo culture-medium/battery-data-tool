@@ -103,7 +103,7 @@ class FolderPreferencesTests(unittest.TestCase):
             app = ExtractorApp(root, settings_path=base/'settings.json'); panel = app.text_panel
             try:
                 panel.input.set(str(source)); panel.scan_folder()
-                panel.tree.selection_set('0'); panel.remove_button.invoke()
+                panel.tree.selection_set('0'); panel.show_selection(); panel.remove_button.invoke()
                 self.assertEqual(panel.files, [b])
                 with patch('text_panel.filedialog.askdirectory', return_value=''):
                     panel.start()

@@ -15,6 +15,7 @@ from openpyxl.utils import get_column_letter
 from neware_batch import unique_directory, json_write
 from neware_excel import worksheet_name
 from text_extract import parse_text, find_peaks, validate_ranges
+from batch_statistics import file_statistics
 
 MERGE_MODES = ('全部文件合并', '按类型合并', '每个文件单独')
 
@@ -205,6 +206,7 @@ def run_text_batch(folder, output, options=None, *, cancel=None, on_event=None):
         except Exception as exc:
             manifest['excel_errors'].append(f'峰分析：{exc}')
     manifest['unprocessed'] = len(files) - len(manifest['entries'])
+    manifest['statistics'] = file_statistics(manifest['entries'])
     json_write(run / '批次记录.json', manifest)
     emit({'type': 'done', 'manifest': manifest})
     return manifest

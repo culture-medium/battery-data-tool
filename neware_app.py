@@ -17,6 +17,8 @@ from neware_extract import EXTRACTOR_VERSION
 from battery_view import build_view
 from app_preferences import Preferences
 from file_drop import register_drop
+from batch_statistics import file_statistics, rate_text, summary_text
+from failed_files import offer_failed_files, open_failure_folder
 
 
 CYCLE_MODES = {"自动": "auto", "放电优先": "discharge", "充电优先": "charge"}
@@ -54,14 +56,23 @@ class ExtractorApp:
         self.actions_menu.entryconfigure('另存所选列', state="normal" if has_results and columns and not self.busy else "disabled")
         extra = sum(self.field_vars[i].get() for i in range(4, 8))
         custom = self.mode.get() != '自动' or not self.recursive.get()
-        self.settings_button.configure(text=f'更多设置（+{extra}项）' if extra else '更多设置 · 自定义' if custom else '更多设置')
+        self.settings_button.configure(text='更多设置 · 自定义' if custom else '更多设置 ▾')
+        if not self.extra_fields_open:
+            self.metrics_button.configure(text=f'更多指标（已选 {extra} 项）▾' if extra else '更多指标 ▾')
+        bases = {e.get('capacity_basis') for e in self.entries.values() if e.get('status') == 'success'}
+        labels = ('充电容量（mAh）','放电容量（mAh）') if bases == {'absolute'} else (
+            ('充电容量 / 比容量','放电容量 / 比容量') if 'absolute' in bases else ('充电比容量（mAh/g）','放电比容量（mAh/g）'))
+        for i,label in enumerate(labels,1): self.field_buttons[i].configure(text=label)
         self.update_actions()
         if hasattr(self, "start_button") and not self.busy:
             self.start_button.configure(state="normal" if columns else "disabled")
 
     def update_actions(self):
+        has_failed = self.last_manifest and any(e['status'] == 'error' for e in self.last_manifest['entries'])
+        self.failed_folder_button.configure(state='normal' if has_failed and not self.busy else 'disabled')
         self.actions_menu.entryconfigure('清空列表', state='normal' if self.files and not self.busy else 'disabled')
         self.actions_menu.entryconfigure('移除选中', state='normal' if self.tree.selection() and not self.busy else 'disabled')
+        self.remove_button.configure(state='normal' if self.tree.selection() and not self.busy else 'disabled')
         selected_land = [self.files[int(i)] for i in self.tree.selection() if self.files[int(i)].suffix.lower() == '.cex']
         self.actions_menu.entryconfigure('蓝电循环口径', state='normal' if selected_land and not self.busy else 'disabled')
         choices = {self.land_modes.get(str(p), 'auto') for p in selected_land}
@@ -142,9 +153,19 @@ class ExtractorApp:
         for i, path in enumerate(self.files):
             mode = self.land_modes.get(str(path), 'auto')
             status = '等待 · ' + ('先充后放' if mode == 'charge' else '先放后充') if mode != 'auto' else '等待提取'
-            self.tree.insert("", "end", iid=str(i), values=(path.name, status, "", ""), tags=("alternate",) if i % 2 else ())
+            self.tree.insert("", "end", iid=str(i), values=(path.name, path.suffix[1:].upper(), status, "", ""), tags=("alternate",) if i % 2 else ())
         self.count_text.set(f"{len(self.files)} 个文件")
         self.detail.set('')
+        self.status.set(f'共 {len(self.files)} 个文件 · 提取成功率 —')
+
+    def choose_files(self):
+        if self.busy: return
+        selected = filedialog.askopenfilenames(parent=self.root, title='添加电池测试文件',
+            initialdir=self.preferences.initial_directory('battery_input', app_directory()),
+            filetypes=[('电池测试文件', '*.ndax *.cex'), ('新威 NDAX', '*.ndax'), ('蓝电 CEX', '*.cex')])
+        if selected:
+            self.add_paths(selected)
+            self.remember_paths(battery_input=Path(selected[0]).parent)
 
     def choose_folder(self):
         selected = filedialog.askdirectory(parent=self.root, title="选择包含 NDAX / CEX 的文件夹",
@@ -177,14 +198,17 @@ class ExtractorApp:
 
     def set_busy(self, value):
         self.busy = value
-        for button in self.edit_buttons + self.field_buttons + [self.browse_button, self.start_button, self.recursive_box, self.output_entry, self.settings_button, self.more_button]:
+        for button in self.edit_buttons + self.field_buttons + [self.browse_button, self.start_button, self.recursive_box, self.output_entry, self.settings_button, self.more_button, self.metrics_button]:
             button.configure(state="disabled" if value else "normal")
         self.mode_box.configure(state="disabled" if value else "readonly")
         self.stop_button.configure(state="normal" if value else "disabled")
         if value:
             self.advanced_window.withdraw()
-            self.stop_button.pack(side='right', padx=(10, 0), after=self.start_button)
-        else: self.stop_button.pack_forget()
+            self.start_button.configure(text='正在提取…')
+            self.stop_button.pack(fill='x', pady=(10, 0), after=self.start_button)
+        else:
+            self.stop_button.pack_forget()
+            self.start_button.configure(text='▶  开始提取')
         self.fields_changed()
 
     def start(self):
@@ -248,7 +272,7 @@ class ExtractorApp:
                         missing_mass = event['mass_mg'] is None
                         if missing_mass: status = '完成 · 容量 mAh'
                         mass = '未填写' if missing_mass else f"{event['mass_mg']:.6g}"
-                        self.tree.item(str(i), values=(self.files[i].name, status, event["cycles"], mass), tags=("warning" if one_way or missing_mass else "success",) + (("alternate",) if i % 2 else ()))
+                        self.tree.item(str(i), values=(self.files[i].name, self.files[i].suffix[1:].upper(), status, event["cycles"], mass), tags=("warning" if one_way or missing_mass else "success",) + (("alternate",) if i % 2 else ()))
                         if not self.tree.selection():
                             self.tree.selection_set(str(i))
                             self.tree.focus(str(i))
@@ -258,7 +282,8 @@ class ExtractorApp:
                         self.tree.set(str(i), "status", "需确认口径" if event.get('error_code') == 'statistics_choice_required' else "提取失败")
                         self.tree.item(str(i), tags=("error",))
                     self.progress.configure(value=len(self.entries))
-                    self.status.set(f"已处理 {len(self.entries)} / {len(self.files)} 个文件")
+                    stats = file_statistics(self.entries.values())
+                    self.status.set(f"已处理 {len(self.entries)} / {len(self.files)} · 提取成功率 {rate_text(stats)}")
                 elif kind == "workbook_started":
                     self.status.set("正在将已完成文件合并到 Excel…")
                 elif kind == "batch_done":
@@ -268,14 +293,16 @@ class ExtractorApp:
                     self.last_workbook = Path(manifest["workbook"]) if manifest["workbook"] else None
                     self.open_button.configure(state="normal" if self.last_workbook else "disabled")
                     self.set_busy(False)
-                    self.status.set(f"{'已停止' if manifest['cancelled'] else '处理完成'} · 成功 {manifest['success']}，失败 {manifest['failed']}，未处理 {manifest['skipped']}")
+                    self.status.set(summary_text(manifest['statistics'], stopped=manifest['cancelled'], skipped=manifest['skipped']))
                     self.show_selection()
                     if manifest["excel_error"]:
                         self.last_error = manifest["excel_error"]
-                        self.status.set("提取完成，但 Excel 保存失败")
+                        self.status.set(summary_text(manifest['statistics']) + ' · Excel 保存失败')
                         self.detail.set(manifest["excel_error"] + "；可点击“另存所选列”重试。")
                     for i in range(len(manifest["entries"]), len(self.files)):
                         self.tree.set(str(i), "status", "未处理")
+                    copied = offer_failed_files(self.root, manifest)
+                    if copied: self.detail.set(copied)
                 elif kind == "fatal":
                     self.last_error = event["error"]
                     self.set_busy(False)
@@ -313,6 +340,12 @@ class ExtractorApp:
     def open_results(self):
         if self.last_workbook:
             self.open_path(self.last_workbook)
+
+    def open_failed_folder(self):
+        if self.busy: return
+        selected = self.tree.selection()
+        entry = self.entries.get(int(selected[0])) if selected else None
+        open_failure_folder(self.root, self.last_manifest, entry.get('source') if entry else None)
 
     def close(self):
         if self.busy or self.text_panel.busy:

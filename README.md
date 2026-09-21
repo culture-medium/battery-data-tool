@@ -2,9 +2,9 @@
 
 Windows 本地程序，批量提取新威 **NDAX**、蓝电 **CEX** 循环数据，并将 **TXT / CSV / TSV** 转为 Excel。无需模型、账号或联网。
 
-当前版本：**0.4.7**。
+当前版本：**0.5.0**。
 
-[下载 Windows 程序包](downloads/BatteryDataTool-0.4.7-Windows-x64.zip?raw=1) · [校验值](downloads/SHA256SUMS.txt)
+[下载 Windows 程序包](downloads/BatteryDataTool-0.5.0-Windows-x64.zip?raw=1) · [校验值](downloads/SHA256SUMS.txt)
 
 ## 使用
 
@@ -12,9 +12,11 @@ Windows 本地程序，批量提取新威 **NDAX**、蓝电 **CEX** 循环数据
 
 1. 选择「电池文件提取」或「TXT 转 Excel」。
 2. 拖入多个文件或文件夹，也可点击「选择文件夹」；默认扫描子文件夹。
-3. 确认导出字段和保存目录，点击开始。
+3. 在右侧确认导出字段和保存目录，点击开始。
 
-电池文件默认导出循环号、充电容量/比容量、放电容量/比容量、效率。额外指标在「更多设置」。一批文件保存为一个 Excel，每个测试独占一个工作表、每项指标独占一列，可直接复制。
+新版采用左侧功能导航、中间文件列表和右侧设置布局。支持「添加文件」多选、列表勾选与状态标签；TXT 页面使用同样布局。列表勾选用于移除和设置，点击开始处理整个列表。
+
+电池文件默认导出循环号、充电容量/比容量、放电容量/比容量、效率。额外指标在「更多指标」。一批文件保存为一个 Excel，每个测试独占一个工作表、每项指标独占一列，可直接复制。
 
 保存位置选好后，点击开始直接导出，不再重复询问。重开程序时文件列表为空，保存位置会保留。选中后按 Delete 或使用移除操作，只移除列表项，不删除原文件。
 
@@ -31,6 +33,8 @@ Windows 本地程序，批量提取新威 **NDAX**、蓝电 **CEX** 循环数据
 | 普通文本 | 自动或指定分隔符、表头，保留编号和原始文本 |
 
 支持拖入、自动分类和去重、停止后保留已完成结果、记住输入输出文件夹。
+
+底部显示文件提取成功率，不代表数据准确率。失败后可选择将副本集中保存；「打开失败文件夹」优先打开副本目录，否则打开失败原文件所在目录。原文件保留。
 
 ## 蓝电统计口径
 
@@ -61,19 +65,21 @@ py -3.12 -m venv .build-venv
 .\build_integrated.ps1
 ```
 
-生成文件位于 `release_build/BatteryDataTool_047.exe`，PyInstaller 会收集 TkDnD 本地库及第三方许可证。
+生成文件位于 `release_build/BatteryDataTool_050.exe`，PyInstaller 会收集 TkDnD 本地库及第三方许可证。
 
 ## 测试与验证范围
 
 不依赖实验数据的测试：
 
 ```powershell
-.\.build-venv\Scripts\python.exe -m unittest test_neware_extract.LogicTests test_neware_batch test_app_preferences test_land_energy -v
+.\.build-venv\Scripts\python.exe -m unittest test_neware_extract.LogicTests test_neware_batch test_app_preferences test_land_energy test_land_recovery test_land_terminal test_batch_feedback test_ui_layout -v
 ```
 
-0.4.7 在本地用九份测试文件与用户提供的参考表进行核验，共 **3,718 圈、24,828 个指标**，在答案显示精度下全部一致；独立 EXE 保存的默认列与全部列工作簿也逐单元格核对。原始实验文件、参考答案、个人路径和提取结果不随仓库提供。
+0.5.0 独立 EXE 在本地回归 20 份电池文件，共 **5,566 圈**。其中 11 份的 **24,939 项用户参考指标**在参考显示精度下一致；另 9 份的 **18,110 项数值**与蓝电读取库在绝对或相对 2e-6 容差内一致。这 9 份未提供完整用户参考表，能量保持率未由该库接口独立核验。默认及全字段工作簿共 64,835 个数据单元格逐项核对。原始实验文件、参考答案、个人路径和提取结果不随仓库提供。
 
-新增用本机原厂读取库核对四份同系列文件共 9,510 项数值（允许单精度转换误差），并在临时副本上验证两种布局、两个方向的 16 种能量末值变化。可公开运行的合成测试覆盖下降、跨零、负值、续测，以及容量/时间倒退、非有限值、缺段、重复与调换工步的拒绝处理。程序运行不依赖原厂软件或读取库。
+兼容已核验的暂停恢复回档及全零占位记录，严格匹配版本、设备、通道和连续状态事件；续测数据必须恢复至暂停前的时间和容量，否则明确报错。收尾电流异常需由后续静置及相同累计值核验。保留源记录顺序，不相加累计量、不取最大值替代末值。运行程序不依赖蓝电软件或读取库。
+
+新增合成测试覆盖恢复序列损坏、截断续测、收尾方向、失败文件复制和目录按钮、勾选/键盘多选、文件去重、导航和窄窗口按钮换行。实际窗口目视检查由用户中止，最终版不声称完成全部页面及缩放比例的目视核验。
 
 文件头统计标志的含义来自已核验 CEX 样本对照，尚无公开格式规范支撑，不能保证任意未来 CEX 文件都适用。旧计数布局也无法单靠结构检查证明原文件未丢失整圈；新版本和不同工步结构仍需官方导出表核验。
 
@@ -85,6 +91,6 @@ py -3.12 -m venv .build-venv
 - `neware_extract.py`、`land_extract.py`、`land_statistics.py`：读取原始数据及核对循环口径。
 - `neware_batch.py`、`neware_excel.py`：批处理、数值列和工作表导出。
 - `text_extract.py`、`text_batch.py`：文本读取、CV 分圈/找峰及 Excel 写入。
-- `battery_view.py`、`text_panel.py`、`ui_common.py`：界面。
+- `battery_view.py`、`text_panel.py`、`text_view.py`、`ui_common.py`、`ui_table.py`：界面。
 
 第三方组件说明与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 `许可证/`。

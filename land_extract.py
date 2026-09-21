@@ -41,10 +41,46 @@ def note_energy_decrease(metadata, previous, point, *, step_offset, boundary=Fal
             'segment_boundary': boundary, 'previous': dict(previous), 'current': dict(point)})
 
 
+def verified_float_resume(blob, events, before_offset, after_offset):
+    """A contiguous, header-bound pause/resume handshake in float profile 7."""
+    if blob[4:8] != b'\x07\x00\x04\x00' or len(events) != 5:
+        return False
+    channel_code = (blob[8] << 24) | (blob[9] << 16) | 0x100e
+    return (after_offset == before_offset + 96
+        and [e['offset'] for e in events] == list(range(before_offset+16, after_offset, 16))
+        and [e['code'] for e in events] == [0x803, 0x203, 0x1008, 0x11012, channel_code]
+        and events[1]['value'] >= events[0]['value']
+        and events[2]['value'] == struct.unpack_from('<I', blob, 4)[0]
+        and events[3]['value'] == struct.unpack_from('<I', blob, 40)[0]
+        and events[4]['value'] == events[1]['value'])
+
+
+def is_resume_placeholder(blob, offset, step):
+    """Only skip one zero slot immediately before a verified resume handshake."""
+    if not step or step['mode'] not in (0x75, 0x76) or not step['records']:
+        return False
+    if blob[offset:offset+16] != bytes(16) or offset+112 > len(blob):
+        return False
+    events = []
+    for pos in range(offset+16, offset+96, 16):
+        sig, kind, code, value = struct.unpack_from('<4I', blob, pos)
+        if sig != 0xffffcccc or kind != 0x33: return False
+        events.append({'offset': pos, 'code': code, 'value': value})
+    if not verified_float_resume(blob, events, offset, offset+96): return False
+    time, _, current, capacity, energy = struct.unpack_from('<Ihhff', blob, offset+96)
+    previous = step['last']
+    return (time >> 16 != 0xffff and time >= previous['time_raw']
+            and math.isfinite(capacity) and capacity >= previous['capacity_Ah'] > 0
+            and math.isfinite(energy) and (current < 0 if step['mode'] == 0x75 else current > 0))
+
+
 def read_cex(blob, *, metadata=None):
     metadata = metadata if metadata is not None else {}
     metadata.update(empty_start_rest_steps=[], rest_resume_time_adjustments=[], retention_settings=[],
-                    energy_decrease_count=0, energy_decrease_examples=[], negative_energy_record_count=0)
+                    energy_decrease_count=0, energy_decrease_examples=[], negative_energy_record_count=0,
+                    terminal_current_anomaly_count=0, terminal_current_anomalies=[],
+                    resume_checkpoint_count=0, resume_checkpoints=[],
+                    resume_placeholder_count=0, resume_placeholders=[])
     if len(blob) < 80 or blob[:4] != MAGIC or len(blob) % 16:
         raise ExtractionError('CEX 文件头无法识别或数据被截断。')
     layout = PROFILES.get(blob[4:8])
@@ -88,13 +124,14 @@ def read_cex(blob, *, metadata=None):
                     steps.append(step)
                 source_mode = word2 & 255
                 # The float layout also stores discharge/charge as 02/03.
-                # Keep the original code for audit, and still validate both
-                # the cycle marker and every signed current record below.
+                # Keep the original code for audit; direction comes from this
+                # code and its cycle marker, with current as an integrity check.
                 mode = {0x02: 0x75, 0x03: 0x76}.get(source_mode, source_mode) if layout == 'float16' else source_mode
                 if mode not in (0x70, 0x75, 0x76):
                     raise ExtractionError(f'未核验的 CEX 工步类型 {mode:#x}，偏移 {offset}。')
                 step = {'offset': offset, 'mode': mode, 'source_mode': source_mode, 'cycle_marker': cycle_marker,
-                        'records': 0, 'step_code': word1 >> 16, 'timestamp': word3}
+                        'records': 0, 'step_code': word1 >> 16, 'timestamp': word3,
+                        'header_signature': signature, 'steady_rest': mode == 0x70}
                 pending_status = []
             elif kind == 0x33:
                 pending_status.append({'offset': offset, 'code': word2, 'value': word3})
@@ -108,6 +145,14 @@ def read_cex(blob, *, metadata=None):
         else:
             if step is None or signature >> 16 == 0xffff:
                 raise ExtractionError(f'CEX 记录结构无法识别，偏移 {offset}。')
+            if raw == bytes(16) and is_resume_placeholder(blob, offset, step):
+                metadata['resume_placeholder_count'] += 1
+                if len(metadata['resume_placeholders']) < 32:
+                    metadata['resume_placeholders'].append({'offset': offset, 'step_offset': step['offset'],
+                        'previous_offset': step['last']['offset'], 'next_data_offset': offset+96,
+                        'reason': 'zero_slot_before_verified_pause_resume_handshake'})
+                offset += 16
+                continue
             time_raw, voltage, current = struct.unpack_from('<Ihh', raw)
             if layout == 'counter16':
                 raw_capacity, raw_energy = struct.unpack_from('<If', raw, 8)
@@ -120,11 +165,17 @@ def read_cex(blob, *, metadata=None):
                 raise ExtractionError(f'CEX 累计容量/能量无效，偏移 {offset}。')
             if energy < 0:
                 metadata['negative_energy_record_count'] += 1
-            if (step['mode'] == 0x75 and current >= 0) or (step['mode'] == 0x76 and current <= 0):
-                raise ExtractionError(f'CEX 充放电方向与记录电流不一致，偏移 {offset}。')
+            if step.get('terminal_current_mismatch'):
+                # An interior mismatch is never a terminal switching sample.
+                raise ExtractionError(f'CEX 充放电方向与记录电流不一致，偏移 {step["terminal_current_mismatch"]["offset"]}。')
             point = {'offset': offset, 'time_raw': time_raw, 'capacity_Ah': capacity, 'energy_Wh': energy,
                      'raw_capacity': raw_capacity, 'raw_energy': raw_energy,
                      'voltage_raw': voltage, 'current_raw': current}
+            if (step['mode'] == 0x75 and current >= 0) or (step['mode'] == 0x76 and current <= 0):
+                step['terminal_current_mismatch'] = point
+            if step['mode'] == 0x70:
+                step['steady_rest'] = (step['steady_rest'] and current == 0 and
+                    (not step['records'] or all(point[k] == step['first'][k] for k in ('capacity_Ah', 'energy_Wh'))))
             if step['records']:
                 previous = step['last']
                 decreasing_capacity = capacity < previous['capacity_Ah']
@@ -138,8 +189,25 @@ def read_cex(blob, *, metadata=None):
                     and all(point[k] == previous[k] for k in ('capacity_Ah', 'energy_Wh'))
                     and codes == [0x803, 0x203, 0x1008, 0x7f408001, 0xff808001]
                     and pending_status[1]['value'] >= pending_status[0]['value'])
-                if decreasing_capacity or (decreasing_time and not resume_tick):
+                checkpoint = (step['mode'] in (0x75, 0x76) and decreasing_time and decreasing_capacity
+                    and verified_float_resume(blob, pending_status, previous['offset'], offset)
+                    and time_raw >= step['first']['time_raw'] and capacity >= step['first']['capacity_Ah'])
+                if (decreasing_capacity or (decreasing_time and not resume_tick)) and not checkpoint:
                     raise ExtractionError(f'CEX 工步内累计容量回退或时间倒退，偏移 {offset}。')
+                if checkpoint:
+                    # A file cut during recovery has ambiguous native endpoint
+                    # behavior. Require later data in this step to reach the
+                    # pre-pause time AND capacity before accepting the step.
+                    pending = step.get('_resume_pending', previous)
+                    step['_resume_pending'] = {
+                        'time_raw': max(pending['time_raw'], previous['time_raw']),
+                        'capacity_Ah': max(pending['capacity_Ah'], previous['capacity_Ah']),
+                        'offset': offset}
+                    metadata['resume_checkpoint_count'] += 1
+                    if len(metadata['resume_checkpoints']) < 32:
+                        metadata['resume_checkpoints'].append({'step_offset': step['offset'],
+                            'previous': dict(previous), 'restored': dict(point),
+                            'status_events': list(pending_status), 'reason': 'verified_pause_resume_checkpoint'})
                 # Native LAND also retains decreasing/negative energy. Near
                 # zero voltage it need not increase with charge throughput.
                 note_energy_decrease(metadata, previous, point, step_offset=step['offset'])
@@ -149,6 +217,12 @@ def read_cex(blob, *, metadata=None):
                         'time_raw': time_raw, 'status_events': list(pending_status)})
             else:
                 step['first'] = point
+            recovery = step.get('_resume_pending')
+            if recovery and time_raw >= recovery['time_raw'] and capacity >= recovery['capacity_Ah']:
+                step.pop('_resume_pending')
+                for event in metadata['resume_checkpoints']:
+                    if event['step_offset'] == step['offset'] and 'recovered_at_offset' not in event:
+                        event['recovered_at_offset'] = offset
             step['last'] = point
             step['records'] += 1
             records += 1
@@ -166,6 +240,30 @@ def read_cex(blob, *, metadata=None):
         steps = steps[1:]
     if not steps or any(not step['records'] for step in steps):
         raise ExtractionError('CEX 文件无数据或包含空工步，请等待文件写入完成。')
+    for index, active in enumerate(steps):
+        if active.get('_resume_pending'):
+            raise ExtractionError(f'CEX 暂停恢复后的续测数据不足，无法确认工步末值，偏移 {active["_resume_pending"]["offset"]}。请提供续测完成后的文件或用蓝电软件导出。')
+        point = active.get('terminal_current_mismatch')
+        if point is None: continue
+        rest = steps[index+1] if index+1 < len(steps) else None
+        marker = active['cycle_marker']
+        # Verified terminal outlier: earlier active records have the correct
+        # sign, and a following zero-current rest holds the exact same Q/E.
+        # Never reinterpret direction from a single instantaneous current.
+        coherent_end = (active['records'] >= 2 and marker is not None
+            and marker['direction_flag'] == int(active['mode'] == 0x75)
+            and rest is not None and rest['mode'] == 0x70 and rest['steady_rest']
+            and rest['cycle_marker'] == marker and rest['timestamp'] >= active['timestamp']
+            and rest['first']['time_raw'] >= point['time_raw']
+            and all(rest['first'][k] == point[k] for k in ('capacity_Ah', 'energy_Wh')))
+        if not coherent_end:
+            raise ExtractionError(f'CEX 充放电方向与记录电流不一致，且未通过收尾静置核验，偏移 {point["offset"]}。')
+        metadata['terminal_current_anomaly_count'] += 1
+        if len(metadata['terminal_current_anomalies']) < 32:
+            metadata['terminal_current_anomalies'].append({'step_offset': active['offset'],
+                'mode': active['mode'], 'cycle_marker': marker, 'record': dict(point),
+                'following_rest_offset': rest['offset'], 'transition_signature': rest['header_signature'],
+                'reason': 'terminal_record_followed_by_zero_current_rest_holding_same_capacity_and_energy'})
     return layout, mass_g, steps, references, records, blocks
 
 
@@ -203,9 +301,9 @@ def extract(path: Path, *, cycle_mode='auto'):
     if first_charge_reference and (first_mode != DISCHARGE or references):
         raise ExtractionError('首圈充电参考与所选循环口径/参考事件组合尚未核验。')
     cycles, assignment = assign_cycles(groups, layout, first_mode)
-    # Only charge-based stored reference flags have independent answers.
-    if references and (first_mode != DISCHARGE or any(r['flags'] != 0x8200 for r in references)):
-        raise ExtractionError('此蓝电参考值的方向/标志尚未核验，无法确认保持率。')
+    # Stored B1/B2 baselines work with either verified statistics direction.
+    if any(r['flags'] != 0x8200 for r in references):
+        raise ExtractionError('此蓝电参考值的标志尚未核验，无法确认保持率。')
     rows, previous_capacity, previous_energy = [], None, None
     first_capacity, first_energy = None, None
     reference_index, qref, eref = 0, None, None
@@ -220,7 +318,9 @@ def extract(path: Path, *, cycle_mode='auto'):
         edis = sum(g[-1]['last']['energy_Wh'] for g in discharge)
         retained = discharge if first_mode == CHARGE else charge
         qret, eret = (qdis, edis) if first_mode == CHARGE else (qch, ech)
-        end = (retained[-1] if retained else cycle[-1])[-1]['last']['offset']
+        # A reference set during the following rest belongs to this cycle.
+        # Use the next cycle's marker as the boundary, not the active endpoint.
+        end = cycles[index][0][0]['cycle_marker']['offset'] - 1 if index < len(cycles) else len(blob) - 1
         while reference_index < len(references) and references[reference_index]['offset'] <= end:
             reference = references[reference_index]
             if reference['kind'] == 0xb1: qref = reference

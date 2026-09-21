@@ -13,6 +13,7 @@ from neware_extract import EXTRACTOR_VERSION, safe_filename
 from battery_extract import extract, EXTENSIONS
 from battery_schema import profile, available_columns
 from land_statistics import StatisticsChoiceRequired
+from batch_statistics import file_statistics
 
 
 def collect_files(paths: list[Path], recursive: bool = True) -> list[Path]:
@@ -78,6 +79,12 @@ def save_result(result: dict, run_directory: Path, columns=None) -> dict:
             notes.append(f"原始能量有 {result['audit']['energy_decrease_count']} 处下降；按末值导出，未取最大值、归零或重排。示例见 JSON。")
         if result['audit'].get('negative_energy_record_count'):
             notes.append('原始文件含负能量记录，按蓝电原值保留。')
+        if result['audit'].get('terminal_current_anomaly_count'):
+            notes.append(f"有 {result['audit']['terminal_current_anomaly_count']} 条收尾电流异常，已用后续零电流静置及相同累计值核验；保留原始工步方向，详情见 JSON。")
+        if result['audit'].get('resume_checkpoint_count'):
+            notes.append(f"有 {result['audit']['resume_checkpoint_count']} 处暂停恢复时的检查点回退；已核对设备、版本和事件顺序，保留原始记录顺序，按工步最终累计值导出。")
+        if result['audit'].get('resume_placeholder_count'):
+            notes.append(f"跳过 {result['audit']['resume_placeholder_count']} 条紧邻已核验恢复事件的全零占位记录；偏移保存在 JSON。")
     if single_direction:
         notes += ["仅单向记录的循环：" + "、".join(map(str, single_direction)),
                   "这些循环已原样保留；缺少方向的 0 代表尚无该方向记录，不能据此评价完整循环。"]
@@ -94,6 +101,9 @@ def save_result(result: dict, run_directory: Path, columns=None) -> dict:
             "statistics_policy": policy,
             "energy_decrease_count": result['audit'].get('energy_decrease_count', 0),
             "negative_energy_record_count": result['audit'].get('negative_energy_record_count', 0),
+            "terminal_current_anomaly_count": result['audit'].get('terminal_current_anomaly_count', 0),
+            "resume_checkpoint_count": result['audit'].get('resume_checkpoint_count', 0),
+            "resume_placeholder_count": result['audit'].get('resume_placeholder_count', 0),
             "source_sha256": result["source_sha256"], "selected_columns": list(columns)}
 
 
@@ -150,6 +160,7 @@ def run_batch(files: list[Path], output: Path, *, cycle_mode: str = "auto",
         except Exception as exc:
             manifest["excel_error"] = f"Excel 保存失败：{type(exc).__name__}: {exc}"
     manifest["skipped"] = len(files) - len(manifest["entries"])
+    manifest['statistics'] = file_statistics(manifest['entries'])
     manifest["completed_at"] = datetime.now().astimezone().isoformat()
     json_write(manifest_path, manifest)
     emit({"type": "batch_done", "manifest": manifest})

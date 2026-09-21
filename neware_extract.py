@@ -27,7 +27,7 @@ import xml.etree.ElementTree as ET
 HEADERS = ["循环号", "充电比容量(mAh/g)", "放电比容量(mAh/g)", "充放电效率(%)",
            "充电能量(Wh)", "放电能量(Wh)", "容量保持率(%)"]
 PRECISION = [0, 2, 2, 2, 6, 6, 2]
-EXTRACTOR_VERSION = "0.4.7"
+EXTRACTOR_VERSION = "0.5.0"
 CHARGE = {1, 3, 7, 9, 27}
 DISCHARGE = {2, 8, 10, 19, 20, 26}
 PASSIVE = {4, 5, 13, 21, 22}

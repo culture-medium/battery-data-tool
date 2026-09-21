@@ -1,6 +1,7 @@
 """Exercise the real per-file CEX choice UI in source and frozen smoke runs."""
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 
 def check_statistics_choice(app, manifest, output, wait_for, start_without_prompt):
@@ -18,9 +19,20 @@ def check_statistics_choice(app, manifest, output, wait_for, start_without_promp
         app.output.set(str(output/'口径流程'))
         # The advanced Neware setting must not override CEX file settings.
         app.mode.set('放电优先')
-        start_without_prompt(app); wait_for(app.root, app)
+        with patch('failed_files.messagebox.askyesno', return_value=True) as ask:
+            start_without_prompt(app); wait_for(app.root, app)
+            ask.assert_called_once()
         first = app.last_manifest
         assert (first['failed'], first['success']) == (1, 1), first
+        assert first['statistics']['success_rate_percent'] == 50
+        assert '提取成功率 50.0%' in app.status.get()
+        copy, = first['failed_file_copies']['copied']
+        assert Path(copy['copy']).read_bytes() == unknown.read_bytes() == changed
+        assert str(app.failed_folder_button['state']) == 'normal'
+        with patch('failed_files.os.startfile') as opened:
+            app.failed_folder_button.invoke()
+            opened.assert_called_once_with(str(Path(copy['copy']).parent.resolve()))
+        assert known.read_bytes() == original
         error = next(e for e in first['entries'] if e['status'] == 'error')
         assert error['error_code'] == 'statistics_choice_required'
         assert app.tree.set(str(error['index']), 'status') == '需确认口径'
@@ -35,6 +47,9 @@ def check_statistics_choice(app, manifest, output, wait_for, start_without_promp
         start_without_prompt(app); wait_for(app.root, app)
         second = app.last_manifest
         assert (second['failed'], second['success']) == (0, 2), second
+        assert second['statistics']['success_rate_percent'] == 100
+        assert '提取成功率 100.0%' in app.status.get()
+        assert str(app.failed_folder_button['state']) == 'disabled'
         assert all(e['cycles'] == 191 for e in second['entries'])
         sources = [e['statistics_policy']['source'] for e in second['entries']]
         assert sources == ['explicit_user_choice', 'file_header_byte_32_verified_mapping'], sources
@@ -42,4 +57,6 @@ def check_statistics_choice(app, manifest, output, wait_for, start_without_promp
         assert not app.land_modes
     return {'unknown_marked_for_confirmation': True, 'valid_files_continue': True,
             'per_file_menu_retry': True, 'stale_results_invalidated': True,
-            'neware_setting_does_not_override_cex': True, 'confirmed_cycles': 191}
+            'neware_setting_does_not_override_cex': True, 'confirmed_cycles': 191,
+            'file_success_rate_50_then_100': True, 'failure_copy_confirmed_and_original_preserved': True,
+            'failed_folder_button_verified': True}

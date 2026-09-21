@@ -37,7 +37,12 @@ def register_drop(app):
     from tkinterdnd2 import DND_FILES
     # Explicitly cover the lists and their empty-state labels as well as the
     # window, so dropping on a child control follows the same route.
-    for widget in (app.root, app.tree, app.empty_hint, app.text_panel.tree, app.text_panel.empty_hint):
+    widgets = [app.root, app.tree, app.empty_hint, app.text_panel.tree, app.text_panel.empty_hint]
+    def add_zone(widget):
+        widgets.append(widget)
+        for child in widget.winfo_children(): add_zone(child)
+    for zone in (app.drop_zone, app.text_panel.drop_zone): add_zone(zone)
+    for widget in widgets:
         widget.drop_target_register(DND_FILES)
         widget.dnd_bind('<<Drop>>', lambda event: receive_drop(app, event.data))
         widget.dnd_bind('<<DropPosition>>', lambda event: 'refuse_drop' if app.busy or app.text_panel.busy else 'copy')
